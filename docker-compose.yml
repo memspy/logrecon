@@ -1,0 +1,57 @@
+name: logrecon
+
+networks:
+  internal:
+    internal: true
+  ingress:
+    internal: false
+
+services:
+  ingest:
+    build: .
+    command: uvicorn ingest_service:app --host 0.0.0.0 --port 8080
+    networks:
+      - internal
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  dashboard:
+    build: .
+    command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+    networks:
+      - ingress
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - .:/app
+    depends_on:
+      ingest:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+
+  fluent-bit:
+    image: fluent/fluent-bit:3.1
+    networks:
+      - internal
+    volumes:
+      - ./fluent-bit.docker.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./fluent-bit-state:/fluent-bit/state
+      - /var/log:/hostlogs:ro
+    depends_on:
+      ingest:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    profiles:
+      - fluentbit

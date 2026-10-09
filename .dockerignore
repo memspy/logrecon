@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.git
+alerts.db
+model.joblib
+logbert.pt
+logbert_vocab.json
+personal_rules.json
+personal_rules_audit.jsonl
+fluent-bit-state/
+logs/
