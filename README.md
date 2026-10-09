@@ -37,15 +37,6 @@ To start ingesting real logs instead of synthetic ones:
 
 ## How it works
 
-```
-Log source -> Fluent Bit -> ingest_service (FastAPI) -> SQLite -> Dashboard
-                                   |                         ^
-                                   |   3 detection layers     |
-                                   |   in priority order       |
-                                   +---------------------------+
-                                   analyst feedback updates
-                                   the allow/deny list
-```
 
 Logs arrive through Fluent Bit (tails a file, posts batches over HTTP) at
 the single ingestion endpoint, `/fluentbit`. Each line is parsed and run
