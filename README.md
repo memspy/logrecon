@@ -334,26 +334,6 @@ Honest list — please read before deploying:
 - **Linux production hosts are the target**, but the Docker isolation has so far been
   verified on Docker Desktop (Windows/WSL2). Validate it on your own server with the
   checklist before trusting it.
-- `testing-checklist.md` is currently in Russian.
-
----
-
-##  Testing
-
-A detailed manual plan — true positives, false-positive traps, evasion cases,
-poisoning scenarios, network isolation and restart recovery — lives in
-[`testing-checklist.md`](testing-checklist.md).
-
-Quick signature smoke test:
-
-```bash
-docker compose run --rm ingest python -c "
-from signature_rules import match
-print(match('GET /../../../../etc/passwd'))
-print(match('GET /catalog?category=environment'))   # -> None
-"
-```
-
 ---
 
 ##  Roadmap
