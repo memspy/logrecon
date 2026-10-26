@@ -1,153 +1,188 @@
 """
-Stores analyst feedback (false positives and confirmed threats) as
-vectors and uses cosine similarity to adapt future alerts without
-retraining the underlying model.
-
-Every accepted addition is timestamped, attributed to a reviewer, and
-logged to an append-only audit trail. Additions are rejected outright
-when they look like an attempt (deliberate or accidental) to poison the
-lists: whitelisting something that closely matches an already-confirmed
-threat, submitting an overly generic log line that would suppress a wide
-swath of unrelated traffic, or adding entries faster than a human review
-process plausibly could.
+Streamlit dashboard for reviewing anomalous log entries and teaching
+the model what counts as normal vs. a real threat. Reads alerts pushed
+by ingest_service.py into the shared SQLite store.
 """
 
 import json
-import time
-from pathlib import Path
-from typing import List, Optional
 
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+import streamlit as st
 
-SIMILARITY_THRESHOLD = 0.95
-CONFLICT_SIMILARITY_THRESHOLD = 0.90
-MAX_ADDITIONS_PER_HOUR = 20
-MIN_MESSAGE_TOKENS = 3
+from anomaly_detector import AnomalyDetector
+from log_parser import LogParser
+from personal_rules import PersonalRules, RuleRejected
+from signature_rules import match as match_signature
+from storage import AlertStore
 
-class RuleRejected(Exception):
-    """Raised when an attempted rule addition looks unsafe to apply automatically."""
+RULES_PATH = 'personal_rules.json'
+DB_PATH = 'alerts.db'
 
-class PersonalRules:
-    def __init__(self, rules_path: str = 'personal_rules.json',
-                 audit_path: str = 'personal_rules_audit.jsonl'):
-        self.rules_path = Path(rules_path)
-        self.audit_path = Path(audit_path)
-        self.false_positives: List[dict] = []
-        self.true_positive_threats: List[dict] = []
-        self._load()
+@st.cache_resource
+def get_components():
+    detector = AnomalyDetector()
+    try:
+        detector.load()
+    except FileNotFoundError:
+        pass
+    return PersonalRules(rules_path=RULES_PATH), AlertStore(db_path=DB_PATH), LogParser(), detector
 
-    def _load(self) -> None:
-        if not self.rules_path.exists():
+def render_manual_classification(rules, parser, detector, reviewer):
+    with st.expander('📝 Ручная классификация'):
+        raw_text = st.text_area('Строка лога', key='manual_log_input', height=80)
+
+        if not raw_text.strip():
             return
-        with open(self.rules_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        self.false_positives = data.get('false_positives', [])
-        self.true_positive_threats = data.get('true_positive_threats', [])
 
-    def _save(self) -> None:
-        data = {
-            'false_positives': self.false_positives,
-            'true_positive_threats': self.true_positive_threats,
-        }
-        with open(self.rules_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        record = parser.parse_line(raw_text)
+        vector = detector.vectorize([record])[0]
 
-    def _audit(self, action: str, raw_log: str, reviewer: str, note: Optional[str] = None) -> None:
-        record = {
-            'timestamp': time.time(),
-            'action': action,
-            'reviewer': reviewer,
-            'raw': raw_log,
-            'note': note,
-        }
-        with open(self.audit_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        signature = match_signature(record['raw'])
+        if signature:
+            category, description = signature
+            st.warning(f'Совпадает с сигнатурой: {description} ({category})')
 
-    def _check_rate_limit(self, entries: List[dict], list_name: str) -> None:
-        cutoff = time.time() - 3600
-        recent = sum(1 for e in entries if e.get('added_at', 0) > cutoff)
-        if recent >= MAX_ADDITIONS_PER_HOUR:
-            raise RuleRejected(
-                f'{list_name}: {recent} additions in the last hour, at the '
-                f'{MAX_ADDITIONS_PER_HOUR}/hour limit. This usually means either a real '
-                'incident flood (handle it, do not bulk-whitelist around it) or a '
-                'compromised/scripted session — investigate before raising the limit.'
+        status_line = f"service: {record.get('service')} | status: {record.get('status')} | format: {record.get('format')}"
+        if detector.is_trained:
+            score = float(detector.model.decision_function(vector)[0])
+            verdict = 'аномалия' if detector.model.predict(vector)[0] == -1 else 'в пределах нормы'
+            status_line += f" | Isolation Forest: {score:.3f} ({verdict})"
+        st.caption(status_line)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            mark_normal = st.button('👍 Отметить как норму', key='manual_normal')
+        with col2:
+            mark_threat = st.button('⚠️ Отметить как угрозу', key='manual_threat')
+
+        if mark_normal:
+            try:
+                rules.add_false_positive(vector, record['raw'], reviewer=reviewer)
+                st.success('Добавлено в белый список')
+            except RuleRejected as e:
+                st.error(str(e))
+
+        if mark_threat:
+            try:
+                rules.add_true_positive_threat(vector, record['raw'], reviewer=reviewer)
+                st.success('Добавлено в чёрный список')
+            except RuleRejected as e:
+                st.error(str(e))
+
+def render_signature_match(alert, store):
+    with st.container(border=True):
+        if alert.get('context_json'):
+            category, description = json.loads(alert['context_json'])
+        else:
+            category, description = 'unknown', 'unknown'
+        st.error(f'Известная сигнатура атаки: {description} ({category})')
+        st.code(alert['raw'], language=None)
+        st.caption(f"service: {alert.get('service')} | status: {alert.get('status')}")
+
+        if st.button('✅ Принято в работу', key=f"sig_ack_{alert['id']}"):
+            store.mark_reviewed(alert['id'])
+            st.rerun()
+
+def render_known_threat(alert, store):
+    with st.container(border=True):
+        st.error('Совпадение с подтверждённой угрозой')
+        st.code(alert['raw'], language=None)
+        st.caption(f"service: {alert.get('service')} | status: {alert.get('status')}")
+
+        if st.button('✅ Принято в работу', key=f"ack_{alert['id']}"):
+            store.mark_reviewed(alert['id'])
+            st.rerun()
+
+def render_sequence_incident(alert, store):
+    with st.container(border=True):
+        st.warning(f"Подозрительная последовательность событий (score {alert['anomaly_score']:.2f})")
+        context = json.loads(alert['context_json']) if alert.get('context_json') else [alert['raw']]
+
+        for line in context:
+            prefix = '>>> ' if line == alert['raw'] else ''
+            st.code(prefix + line, language=None)
+
+        if st.button('✅ Принято в работу', key=f"seq_ack_{alert['id']}"):
+            store.mark_reviewed(alert['id'])
+            st.rerun()
+
+def render_model_anomaly(alert, rules, store, reviewer):
+    with st.container(border=True):
+        col_info, col_actions = st.columns([4, 1])
+
+        with col_info:
+            st.code(alert['raw'], language=None)
+            st.caption(
+                f"service: {alert.get('service')} | "
+                f"status: {alert.get('status')} | "
+                f"score: {alert['anomaly_score']:.3f}"
             )
 
-    def _check_specificity(self, raw_log: str) -> None:
-        token_count = len(raw_log.split())
-        if token_count < MIN_MESSAGE_TOKENS:
-            raise RuleRejected(
-                f'Log line has only {token_count} token(s) — too generic to safely '
-                'whitelist automatically, since its vector would likely match a wide '
-                'range of unrelated log lines. Add a more specific rule by hand if this '
-                'really is noise.'
-            )
+        with col_actions:
+            vector = json.loads(alert['vector_json'])
 
-    def add_false_positive(self, vector, raw_log: str, reviewer: str = 'unknown') -> None:
-        self._check_specificity(raw_log)
-        self._check_rate_limit(self.false_positives, 'false_positives')
+            if st.button('👍 Это норма', key=f"ok_{alert['id']}"):
+                try:
+                    rules.add_false_positive(vector, alert['raw'], reviewer=reviewer)
+                    store.mark_reviewed(alert['id'])
+                    st.rerun()
+                except RuleRejected as e:
+                    st.error(str(e))
 
-        conflict = self._max_similarity(vector, self.true_positive_threats)
-        if conflict > CONFLICT_SIMILARITY_THRESHOLD:
-            self._audit('rejected_conflict_false_positive', raw_log, reviewer,
-                        note=f'similarity to a confirmed threat: {conflict:.3f}')
-            raise RuleRejected(
-                f'This log is {conflict:.2f} similar to an already-confirmed threat. '
-                'Refusing to whitelist it automatically — if this really is a false '
-                'positive, it needs manual review, not a one-click suppress.'
-            )
+            if st.button('⚠️ Реальная угроза', key=f"threat_{alert['id']}"):
+                try:
+                    rules.add_true_positive_threat(vector, alert['raw'], reviewer=reviewer)
+                    store.mark_reviewed(alert['id'])
+                    st.rerun()
+                except RuleRejected as e:
+                    st.error(str(e))
 
-        entry = {
-            'vector': _to_dense_list(vector),
-            'raw': raw_log,
-            'added_at': time.time(),
-            'reviewer': reviewer,
-        }
-        self.false_positives.append(entry)
-        self._save()
-        self._audit('add_false_positive', raw_log, reviewer)
+def main():
+    st.set_page_config(page_title='LogRecon', layout='wide')
+    st.title('LogRecon')
 
-    def add_true_positive_threat(self, vector, raw_log: str, reviewer: str = 'unknown') -> None:
-        self._check_rate_limit(self.true_positive_threats, 'true_positive_threats')
+    with st.sidebar:
+        reviewer = st.text_input('Ваше имя (для аудита)', value=st.session_state.get('reviewer', ''))
+        st.session_state['reviewer'] = reviewer
+        if not reviewer:
+            st.caption('Без имени решения будут записаны как "unknown"')
 
-        conflict = self._max_similarity(vector, self.false_positives)
-        note = (f'similarity to a whitelisted entry: {conflict:.3f}'
-                if conflict > CONFLICT_SIMILARITY_THRESHOLD else None)
-        if note:
-            self._audit('conflict_true_positive_vs_whitelist', raw_log, reviewer, note=note)
+    rules, store, parser, detector = get_components()
 
-        entry = {
-            'vector': _to_dense_list(vector),
-            'raw': raw_log,
-            'added_at': time.time(),
-            'reviewer': reviewer,
-        }
-        self.true_positive_threats.append(entry)
-        self._save()
-        self._audit('add_true_positive_threat', raw_log, reviewer, note=note)
+    if st.button('🔄 Обновить'):
+        st.rerun()
 
-    def check_false_positive(self, vector) -> bool:
-        return self._max_similarity(vector, self.false_positives) > SIMILARITY_THRESHOLD
+    render_manual_classification(rules, parser, detector, reviewer or 'unknown')
 
-    def check_true_positive(self, vector) -> bool:
-        return self._max_similarity(vector, self.true_positive_threats) > SIMILARITY_THRESHOLD
+    alerts = store.get_pending()
 
-    def _max_similarity(self, vector, stored: List[dict]) -> float:
-        if not stored:
-            return 0.0
-        query = _to_dense_array(vector).reshape(1, -1)
-        stored_matrix = np.array([entry['vector'] for entry in stored])
-        similarities = cosine_similarity(query, stored_matrix)
-        return float(similarities.max())
+    if not alerts:
+        st.info('Нет подозрительных записей на проверке.')
+        return
 
-def _to_dense_list(vector) -> list:
-    if hasattr(vector, 'toarray'):
-        return vector.toarray().ravel().tolist()
-    return list(vector)
+    signature_matches = [a for a in alerts if a['match_type'] == 'signature_match']
+    known_threats = [a for a in alerts if a['match_type'] == 'known_threat']
+    sequence_incidents = [a for a in alerts if a['match_type'] == 'sequence_anomaly']
+    model_anomalies = [a for a in alerts if a['match_type'] == 'model_anomaly']
 
-def _to_dense_array(vector) -> np.ndarray:
-    if hasattr(vector, 'toarray'):
-        return vector.toarray().ravel()
-    return np.asarray(vector)
+    if signature_matches:
+        st.subheader(f'🚨 Известные сигнатуры атак ({len(signature_matches)})')
+        for alert in signature_matches:
+            render_signature_match(alert, store)
+
+    if known_threats:
+        st.subheader(f'Подтверждённые угрозы ({len(known_threats)})')
+        for alert in known_threats:
+            render_known_threat(alert, store)
+
+    if sequence_incidents:
+        st.subheader(f'Сложные инциденты — аномальные последовательности ({len(sequence_incidents)})')
+        for alert in sequence_incidents:
+            render_sequence_incident(alert, store)
+
+    if model_anomalies:
+        st.subheader(f'На классификацию ({len(model_anomalies)})')
+        for alert in model_anomalies:
+            render_model_anomaly(alert, rules, store, reviewer or 'unknown')
+
+if __name__ == '__main__':
+    main()

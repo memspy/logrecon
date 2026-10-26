@@ -1,94 +1,66 @@
 """
-Learns a baseline of "normal" server behavior from parsed logs and
-flags entries that deviate from it using an Isolation Forest model.
+Evaluates the trained IsolationForest model against a labeled synthetic
+log set, to sanity-check the contamination threshold before pointing
+the pipeline at anything real.
+
+Usage:
+    python evaluate.py [count]
 """
 
-from pathlib import Path
-from typing import Any, Dict, List
+import random
+import sys
+from datetime import datetime, timedelta
 
-import joblib
-from sklearn.ensemble import IsolationForest
-from sklearn.feature_extraction.text import HashingVectorizer
+from anomaly_detector import AnomalyDetector
+from generate_sample_logs import generate_anomalous_line, generate_normal_line
+from log_parser import LogParser
 
-VECTOR_DIM = 4096
+def build_labeled_set(count: int, anomaly_ratio: float = 0.15):
+    now = datetime.utcnow()
+    lines = []
+    labels = []
 
-def _log_to_text(record: Dict[str, Any]) -> str:
-    parts = [
-        str(record.get('service', '')),
-        str(record.get('status', '')),
-        str(record.get('message', '')),
-    ]
-    return ' '.join(p for p in parts if p)
+    for i in range(count):
+        dt = now + timedelta(seconds=i)
+        is_anomalous = random.random() < anomaly_ratio
+        line = generate_anomalous_line(dt) if is_anomalous else generate_normal_line(dt)
+        lines.append(line)
+        labels.append(1 if is_anomalous else 0)
 
-class AnomalyDetector:
-    """Isolation Forest based anomaly scorer for parsed log records."""
+    return lines, labels
 
-    def __init__(self, model_path: str = 'model.joblib', contamination: float = 0.02):
-        self.model_path = Path(model_path)
-        self.vectorizer = HashingVectorizer(
-            n_features=VECTOR_DIM,
-            alternate_sign=False,
-            norm='l2',
-        )
-        self.model = IsolationForest(
-            n_estimators=200,
-            contamination=contamination,
-            random_state=42,
-        )
-        self._is_trained = False
+def main():
+    count = int(sys.argv[1]) if len(sys.argv) > 1 else 500
 
-    def vectorize(self, records: List[Dict[str, Any]]):
-        texts = [_log_to_text(r) for r in records]
-        return self.vectorizer.transform(texts)
+    parser = LogParser()
+    detector = AnomalyDetector()
+    detector.load()
 
-    def train(self, records: List[Dict[str, Any]]) -> None:
-        """Builds the baseline 'norm' model from a batch of historical logs."""
-        if not records:
-            raise ValueError('Cannot train on an empty log batch')
+    lines, labels = build_labeled_set(count)
+    records = [parser.parse_line(line) for line in lines]
+    scored = detector.score(records)
 
-        vectors = self.vectorize(records)
-        self.model.fit(vectors)
-        self._is_trained = True
-        self.save()
+    tp = fp = tn = fn = 0
+    for record, label in zip(scored, labels):
+        predicted = 1 if record['is_anomaly'] else 0
+        if predicted == 1 and label == 1:
+            tp += 1
+        elif predicted == 1 and label == 0:
+            fp += 1
+        elif predicted == 0 and label == 0:
+            tn += 1
+        else:
+            fn += 1
 
-    def predict_vectors(self, vectors):
-        """Scores already-vectorized records. Used when the caller needs the
-        raw vectors themselves for further checks (e.g. personal rules)."""
-        if not self._is_trained:
-            self.load()
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
 
-        raw_scores = self.model.decision_function(vectors)
-        predictions = self.model.predict(vectors)
-        return raw_scores, predictions
+    print(f'Test set: {count} lines ({sum(labels)} anomalous, {count - sum(labels)} normal)')
+    print(f'TP={tp} FP={fp} TN={tn} FN={fn}')
+    print(f'Precision: {precision:.3f}')
+    print(f'Recall:    {recall:.3f}')
+    print(f'F1:        {f1:.3f}')
 
-    def score(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Vectorizes and scores records, annotating each with score, flag and vector."""
-        vectors = self.vectorize(records)
-        raw_scores, predictions = self.predict_vectors(vectors)
-
-        results = []
-        for record, raw_score, prediction, vector in zip(records, raw_scores, predictions, vectors):
-            annotated = dict(record)
-            annotated['anomaly_score'] = float(raw_score)
-            annotated['is_anomaly'] = bool(prediction == -1)
-            annotated['_vector'] = vector
-            results.append(annotated)
-
-        return results
-
-    def save(self) -> None:
-        joblib.dump({'model': self.model, 'vectorizer': self.vectorizer}, self.model_path)
-
-    def load(self) -> None:
-        if not self.model_path.exists():
-            raise FileNotFoundError(
-                f'No trained model found at {self.model_path}. Run train_baseline.py first.'
-            )
-        bundle = joblib.load(self.model_path)
-        self.model = bundle['model']
-        self.vectorizer = bundle['vectorizer']
-        self._is_trained = True
-
-    @property
-    def is_trained(self) -> bool:
-        return self._is_trained
+if __name__ == '__main__':
+    main()

@@ -1,10 +1,20 @@
-FROM python:3.11-slim
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
 
-WORKDIR /app
+model.joblib
+logbert.pt
+logbert_vocab.json
+alerts.db
+personal_rules.json
+personal_rules_audit.jsonl
+fluent-bit-state/
+logs/
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+.env
+*.log
 
-COPY . .
-
-EXPOSE 8080 8501
+.DS_Store
+Thumbs.db

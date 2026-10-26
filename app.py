@@ -1,188 +1,151 @@
 """
-Streamlit dashboard for reviewing anomalous log entries and teaching
-the model what counts as normal vs. a real threat. Reads alerts pushed
-by ingest_service.py into the shared SQLite store.
+Converts raw, unstructured log lines into normalized JSON records
+suitable for ML-based anomaly detection. Supports nginx/apache combined
+access logs, Apache error logs, syslog-style logs, and OpenStack's
+structured service logs.
 """
 
-import json
+import re
+from typing import Any, Dict, List
 
-import streamlit as st
+NGINX_COMBINED_RE = re.compile(
+    r'(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+'
+    r'\S+\s+\S+\s+'
+    r'\[(?P<timestamp>[^\]]+)\]\s+'
+    r'"(?P<request>[^"]*)"\s+'
+    r'(?P<status>\d{3})\s+'
+    r'(?P<size>\S+)'
+)
 
-from anomaly_detector import AnomalyDetector
-from log_parser import LogParser
-from personal_rules import PersonalRules, RuleRejected
-from signature_rules import match as match_signature
-from storage import AlertStore
+OPENSTACK_RE = re.compile(
+    r'(?P<source>\S+)\s+'
+    r'(?P<timestamp>\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d+)\s+'
+    r'(?P<pid>\d+)\s+'
+    r'(?P<level>\w+)\s+'
+    r'(?P<logger>\S+)\s+'
+    r'\[(?P<context>[^\]]*)\]\s*'
+    r'(?P<rest>.*)'
+)
 
-RULES_PATH = 'personal_rules.json'
-DB_PATH = 'alerts.db'
+APACHE_ERROR_RE = re.compile(
+    r'\[(?P<timestamp>\w{3} \w{3} \d{2} \d{2}:\d{2}:\d{2} \d{4})\]\s+'
+    r'\[(?P<level>\w+)\]\s+'
+    r'(?P<message>.*)'
+)
 
-@st.cache_resource
-def get_components():
-    detector = AnomalyDetector()
-    try:
-        detector.load()
-    except FileNotFoundError:
-        pass
-    return PersonalRules(rules_path=RULES_PATH), AlertStore(db_path=DB_PATH), LogParser(), detector
+SYSLOG_RE = re.compile(
+    r'(?P<timestamp>\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}'
+    r'|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)\s+'
+    r'(?P<host>\S+)\s+'
+    r'(?P<service>[\w\-/.()]+?)(?:\s[\w.]+)?(?:\[(?P<pid>\d+)\])?:\s+'
+    r'(?P<message>.*)'
+)
 
-def render_manual_classification(rules, parser, detector, reviewer):
-    with st.expander('📝 Ручная классификация'):
-        raw_text = st.text_area('Строка лога', key='manual_log_input', height=80)
+IP_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+INSTANCE_RE = re.compile(r'instance:\s*([0-9a-f-]{36})', re.IGNORECASE)
+STATUS_RE = re.compile(r'status:\s*(\d{3})')
+REQ_ID_RE = re.compile(r'(req-[0-9a-f-]{36})')
 
-        if not raw_text.strip():
-            return
+class LogParser:
+    """Parses raw log lines into a flat, normalized structure."""
 
-        record = parser.parse_line(raw_text)
-        vector = detector.vectorize([record])[0]
+    def __init__(self):
+        self._patterns = [
+            ('nginx_combined', NGINX_COMBINED_RE),
+            ('openstack', OPENSTACK_RE),
+            ('apache_error', APACHE_ERROR_RE),
+            ('syslog', SYSLOG_RE),
+        ]
 
-        signature = match_signature(record['raw'])
-        if signature:
-            category, description = signature
-            st.warning(f'Совпадает с сигнатурой: {description} ({category})')
+    def parse_line(self, raw_line: str) -> Dict[str, Any]:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            return {}
 
-        status_line = f"service: {record.get('service')} | status: {record.get('status')} | format: {record.get('format')}"
-        if detector.is_trained:
-            score = float(detector.model.decision_function(vector)[0])
-            verdict = 'аномалия' if detector.model.predict(vector)[0] == -1 else 'в пределах нормы'
-            status_line += f" | Isolation Forest: {score:.3f} ({verdict})"
-        st.caption(status_line)
+        for fmt_name, pattern in self._patterns:
+            match = pattern.match(raw_line)
+            if match:
+                record = self._normalize(fmt_name, match.groupdict(), raw_line)
+                record['source_key'] = record.get('instance_id') or record.get('ip') or 'unknown'
+                return record
 
-        col1, col2 = st.columns(2)
-        with col1:
-            mark_normal = st.button('👍 Отметить как норму', key='manual_normal')
-        with col2:
-            mark_threat = st.button('⚠️ Отметить как угрозу', key='manual_threat')
+        record = self._fallback(raw_line)
+        record['source_key'] = record.get('ip') or 'unknown'
+        return record
 
-        if mark_normal:
-            try:
-                rules.add_false_positive(vector, record['raw'], reviewer=reviewer)
-                st.success('Добавлено в белый список')
-            except RuleRejected as e:
-                st.error(str(e))
+    def _normalize(self, fmt_name: str, fields: Dict[str, str], raw_line: str) -> Dict[str, Any]:
+        if fmt_name == 'nginx_combined':
+            return {
+                'ip': fields.get('ip'),
+                'timestamp': fields.get('timestamp'),
+                'service': 'http',
+                'status': fields.get('status'),
+                'message': fields.get('request'),
+                'raw': raw_line,
+                'format': fmt_name,
+            }
 
-        if mark_threat:
-            try:
-                rules.add_true_positive_threat(vector, record['raw'], reviewer=reviewer)
-                st.success('Добавлено в чёрный список')
-            except RuleRejected as e:
-                st.error(str(e))
+        if fmt_name == 'openstack':
+            rest = fields.get('rest', '')
+            context = fields.get('context', '')
+            ip_match = IP_RE.search(rest)
+            status_match = STATUS_RE.search(rest)
+            instance_match = INSTANCE_RE.search(rest) or INSTANCE_RE.search(context)
+            req_match = REQ_ID_RE.search(context)
+            return {
+                'ip': ip_match.group(0) if ip_match else None,
+                'timestamp': fields.get('timestamp'),
+                'service': fields.get('logger'),
+                'status': status_match.group(1) if status_match else None,
+                'message': rest,
+                'raw': raw_line,
+                'format': fmt_name,
+                'instance_id': instance_match.group(1) if instance_match else None,
+                'request_id': req_match.group(1) if req_match else None,
+            }
 
-def render_signature_match(alert, store):
-    with st.container(border=True):
-        if alert.get('context_json'):
-            category, description = json.loads(alert['context_json'])
-        else:
-            category, description = 'unknown', 'unknown'
-        st.error(f'Известная сигнатура атаки: {description} ({category})')
-        st.code(alert['raw'], language=None)
-        st.caption(f"service: {alert.get('service')} | status: {alert.get('status')}")
+        if fmt_name == 'apache_error':
+            return {
+                'ip': None,
+                'timestamp': fields.get('timestamp'),
+                'service': f"apache_{fields.get('level')}",
+                'status': None,
+                'message': fields.get('message'),
+                'raw': raw_line,
+                'format': fmt_name,
+            }
 
-        if st.button('✅ Принято в работу', key=f"sig_ack_{alert['id']}"):
-            store.mark_reviewed(alert['id'])
-            st.rerun()
+        if fmt_name == 'syslog':
+            ip_match = IP_RE.search(fields.get('message', ''))
+            return {
+                'ip': ip_match.group(0) if ip_match else None,
+                'timestamp': fields.get('timestamp'),
+                'service': fields.get('service'),
+                'status': None,
+                'message': fields.get('message'),
+                'raw': raw_line,
+                'format': fmt_name,
+            }
 
-def render_known_threat(alert, store):
-    with st.container(border=True):
-        st.error('Совпадение с подтверждённой угрозой')
-        st.code(alert['raw'], language=None)
-        st.caption(f"service: {alert.get('service')} | status: {alert.get('status')}")
+        return self._fallback(raw_line)
 
-        if st.button('✅ Принято в работу', key=f"ack_{alert['id']}"):
-            store.mark_reviewed(alert['id'])
-            st.rerun()
+    def _fallback(self, raw_line: str) -> Dict[str, Any]:
+        ip_match = IP_RE.search(raw_line)
+        return {
+            'ip': ip_match.group(0) if ip_match else None,
+            'timestamp': None,
+            'service': 'unknown',
+            'status': None,
+            'message': raw_line,
+            'raw': raw_line,
+            'format': 'unrecognized',
+        }
 
-def render_sequence_incident(alert, store):
-    with st.container(border=True):
-        st.warning(f"Подозрительная последовательность событий (score {alert['anomaly_score']:.2f})")
-        context = json.loads(alert['context_json']) if alert.get('context_json') else [alert['raw']]
-
-        for line in context:
-            prefix = '>>> ' if line == alert['raw'] else ''
-            st.code(prefix + line, language=None)
-
-        if st.button('✅ Принято в работу', key=f"seq_ack_{alert['id']}"):
-            store.mark_reviewed(alert['id'])
-            st.rerun()
-
-def render_model_anomaly(alert, rules, store, reviewer):
-    with st.container(border=True):
-        col_info, col_actions = st.columns([4, 1])
-
-        with col_info:
-            st.code(alert['raw'], language=None)
-            st.caption(
-                f"service: {alert.get('service')} | "
-                f"status: {alert.get('status')} | "
-                f"score: {alert['anomaly_score']:.3f}"
-            )
-
-        with col_actions:
-            vector = json.loads(alert['vector_json'])
-
-            if st.button('👍 Это норма', key=f"ok_{alert['id']}"):
-                try:
-                    rules.add_false_positive(vector, alert['raw'], reviewer=reviewer)
-                    store.mark_reviewed(alert['id'])
-                    st.rerun()
-                except RuleRejected as e:
-                    st.error(str(e))
-
-            if st.button('⚠️ Реальная угроза', key=f"threat_{alert['id']}"):
-                try:
-                    rules.add_true_positive_threat(vector, alert['raw'], reviewer=reviewer)
-                    store.mark_reviewed(alert['id'])
-                    st.rerun()
-                except RuleRejected as e:
-                    st.error(str(e))
-
-def main():
-    st.set_page_config(page_title='LogRecon', layout='wide')
-    st.title('LogRecon')
-
-    with st.sidebar:
-        reviewer = st.text_input('Ваше имя (для аудита)', value=st.session_state.get('reviewer', ''))
-        st.session_state['reviewer'] = reviewer
-        if not reviewer:
-            st.caption('Без имени решения будут записаны как "unknown"')
-
-    rules, store, parser, detector = get_components()
-
-    if st.button('🔄 Обновить'):
-        st.rerun()
-
-    render_manual_classification(rules, parser, detector, reviewer or 'unknown')
-
-    alerts = store.get_pending()
-
-    if not alerts:
-        st.info('Нет подозрительных записей на проверке.')
-        return
-
-    signature_matches = [a for a in alerts if a['match_type'] == 'signature_match']
-    known_threats = [a for a in alerts if a['match_type'] == 'known_threat']
-    sequence_incidents = [a for a in alerts if a['match_type'] == 'sequence_anomaly']
-    model_anomalies = [a for a in alerts if a['match_type'] == 'model_anomaly']
-
-    if signature_matches:
-        st.subheader(f'🚨 Известные сигнатуры атак ({len(signature_matches)})')
-        for alert in signature_matches:
-            render_signature_match(alert, store)
-
-    if known_threats:
-        st.subheader(f'Подтверждённые угрозы ({len(known_threats)})')
-        for alert in known_threats:
-            render_known_threat(alert, store)
-
-    if sequence_incidents:
-        st.subheader(f'Сложные инциденты — аномальные последовательности ({len(sequence_incidents)})')
-        for alert in sequence_incidents:
-            render_sequence_incident(alert, store)
-
-    if model_anomalies:
-        st.subheader(f'На классификацию ({len(model_anomalies)})')
-        for alert in model_anomalies:
-            render_model_anomaly(alert, rules, store, reviewer or 'unknown')
-
-if __name__ == '__main__':
-    main()
+    def parse_file(self, path: str) -> List[Dict[str, Any]]:
+        records = []
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                record = self.parse_line(line)
+                if record:
+                    records.append(record)
+        return records
