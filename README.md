@@ -43,18 +43,18 @@ LogRecon is built around that idea:
 - **It's small.** No GPU, no PyTorch, no cluster. Three containers with a combined
   memory cap of about 1.1 GB, and it keeps working when parts of it are missing.
 
-## ✨ Features
+##  Features
 
 | | |
 |---|---|
-| 🛡️ **Signature layer** | 8 attack categories, with URL-decoding (up to 3 rounds) and SQL-comment normalisation to defeat the common evasions (`%2e%2e%2f`, `%252e…`, `UNI/**/ON`). |
-| 🌲 **Isolation Forest** | `HashingVectorizer` (4096 dims, fixed memory, no vocabulary to fit) + `IsolationForest` (200 trees). Trains in seconds. |
-| 🧠 **Personal rules** | Allow/deny list built from analyst decisions via cosine similarity (threshold 0.95). Works instantly, no retraining. |
-| 🧪 **Anti-poisoning guardrails** | Rate limits, minimum specificity, conflict detection and an append-only audit log with reviewer attribution. |
-| 📥 **Fluent Bit ingest** | Tail any log file → HTTP → FastAPI. Offsets survive restarts. |
-| 🖥️ **Streamlit dashboard** | Prioritised alert queue, one-click classification, and a manual "classify any line" panel. |
-| 🔒 **Locked-down by default** | Ingest service has no published port and no internet access; dashboard bound to `127.0.0.1`. |
-| 🪫 **Graceful degradation** | No trained model? Signatures still work. The service doesn't crash because a layer is missing. |
+|  **Signature layer** | 8 attack categories, with URL-decoding (up to 3 rounds) and SQL-comment normalisation to defeat the common evasions (`%2e%2e%2f`, `%252e…`, `UNI/**/ON`). |
+|  **Isolation Forest** | `HashingVectorizer` (4096 dims, fixed memory, no vocabulary to fit) + `IsolationForest` (200 trees). Trains in seconds. |
+|  **Personal rules** | Allow/deny list built from analyst decisions via cosine similarity (threshold 0.95). Works instantly, no retraining. |
+|  **Anti-poisoning guardrails** | Rate limits, minimum specificity, conflict detection and an append-only audit log with reviewer attribution. |
+|  **Fluent Bit ingest** | Tail any log file → HTTP → FastAPI. Offsets survive restarts. |
+|  **Streamlit dashboard** | Prioritised alert queue, one-click classification, and a manual "classify any line" panel. |
+|  **Locked-down by default** | Ingest service has no published port and no internet access; dashboard bound to `127.0.0.1`. |
+|  **Graceful degradation** | No trained model? Signatures still work. The service doesn't crash because a layer is missing. |
 
 ### Supported log formats
 
@@ -87,7 +87,7 @@ flowchart LR
     C --> L1
     L3 --> D[(SQLite<br/>alerts.db)]
     D --> E[Streamlit dashboard]
-    E -- "👍 normal / ⚠️ threat" --> F[(personal_rules.json<br/>+ audit log)]
+    E -- " normal /  threat" --> F[(personal_rules.json<br/>+ audit log)]
     F -.-> L2
 ```
 
@@ -114,7 +114,7 @@ Add your own by appending a tuple to `SIGNATURES` in `signature_rules.py`, then
 
 ---
 
-## 🚀 Quick start
+##  Quick start
 
 **Requirements:** Docker with the Compose plugin. That's it.
 
@@ -191,21 +191,21 @@ absolute path on your host.
 
 ---
 
-## 🖥️ The dashboard
+##  The dashboard
 
 Alerts are grouped by priority, most urgent first:
 
 | Section | Source | Meaning |
 |---------|--------|---------|
-| 🚨 **Known attack signatures** | Layer 1 | Matched a signature. No decision needed. |
-| ⛔ **Confirmed threats** | Layer 2 | Looks like something you previously marked as a real threat. |
-| ❓ **To classify** | Layer 3 | Unusual for this server. Needs your verdict. |
-| 🔎 **Manual classification** | — | Always available: paste any log line and label it yourself. |
+|  **Known attack signatures** | Layer 1 | Matched a signature. No decision needed. |
+|  **Confirmed threats** | Layer 2 | Looks like something you previously marked as a real threat. |
+|  **To classify** | Layer 3 | Unusual for this server. Needs your verdict. |
+|  **Manual classification** | — | Always available: paste any log line and label it yourself. |
 
 For every item in the queue:
 
-- **👍 This is normal** → added to the allow-list. Similar lines stop alerting.
-- **⚠️ Real threat** → added to the deny-list. Similar lines are escalated on sight.
+- ** This is normal** → added to the allow-list. Similar lines stop alerting.
+- ** Real threat** → added to the deny-list. Similar lines are escalated on sight.
 
 Set your name in the sidebar — every decision is recorded with the reviewer.
 
@@ -238,7 +238,7 @@ Detection strictness is controlled by `contamination` (default `0.02`) in
 
 ---
 
-## 🔒 Security model
+##  Security model
 
 LogRecon processes untrusted data, so the deployment is defensive by default.
 
@@ -252,7 +252,7 @@ LogRecon processes untrusted data, so the deployment is defensive by default.
 - **Resource limits.** `512 MB / 1 CPU` for ingest and dashboard, `128 MB / 0.5 CPU`
   for Fluent Bit.
 
-### ⚠️ The dashboard has no built-in authentication
+###  The dashboard has no built-in authentication
 
 Do **not** expose port 8501 to the internet. Reach it via an SSH tunnel:
 
@@ -277,7 +277,7 @@ Rejections are shown in the dashboard and recorded in the audit log.
 
 ---
 
-## 🧱 Project structure
+##  Project structure
 
 ```
 logrecon/
@@ -318,7 +318,7 @@ personal-rule layers still run; train a baseline to enable layer 3.
 
 ---
 
-## ⚠️ Known limitations
+##  Known limitations
 
 Honest list — please read before deploying:
 
@@ -338,7 +338,7 @@ Honest list — please read before deploying:
 
 ---
 
-## 🧪 Testing
+##  Testing
 
 A detailed manual plan — true positives, false-positive traps, evasion cases,
 poisoning scenarios, network isolation and restart recovery — lives in
@@ -356,7 +356,7 @@ print(match('GET /catalog?category=environment'))   # -> None
 
 ---
 
-## 🗺️ Roadmap
+##  Roadmap
 
 - [ ] English dashboard + i18n
 - [ ] Built-in authentication for the dashboard
@@ -369,7 +369,7 @@ Ideas and PRs welcome.
 
 ---
 
-## 🤝 Contributing
+##  Contributing
 
 1. Fork the repo and create a feature branch.
 2. Add or update tests/checklist entries for your change.
@@ -379,7 +379,7 @@ Ideas and PRs welcome.
 Security issues: please report privately (via a GitHub Security Advisory)
 rather than a public issue.
 
-## 📄 License
+##  License
 
 Released under the [MIT License](LICENSE).
 
