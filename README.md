@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛰️ LogRecon
+#  LogRecon
 
 **Lightweight log anomaly detection for people who actually have to read the logs.**
 
@@ -119,7 +119,7 @@ Add your own by appending a tuple to `SIGNATURES` in `signature_rules.py`, then
 **Requirements:** Docker with the Compose plugin. That's it.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/logrecon.git
+git clone https://github.com/memspy/logrecon.git
 cd logrecon
 ./install.sh
 ```
