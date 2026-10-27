@@ -1,14 +1,3 @@
-"""
-Curated set of well-known attack indicator patterns — the kind of thing
-any WAF or IDS ships with by default (path traversal, SQLi, XSS, command
-injection, webshell names, known scanner tools, common exploit-prone
-endpoints). A match here is deterministic and doesn't need classification:
-it goes straight to the confirmed queue instead of sitting in the
-model_anomaly review pile alongside genuinely ambiguous traffic.
-
-This is a starter set, not exhaustive — extend SIGNATURES as needed.
-"""
-
 import re
 import urllib.parse
 from typing import List, Optional, Tuple
@@ -51,10 +40,6 @@ _COMMENT_RE = re.compile(r'/\*.*?\*/')
 _MAX_DECODE_ROUNDS = 3
 
 def _url_decode_fully(text: str) -> str:
-    """Repeatedly percent-decodes text to catch single and double encoding
-    (%2e%2e%2f, %252e%252e%252f), stopping once decoding stops changing
-    anything or after a bounded number of rounds, so a crafted string
-    can't force unbounded work."""
     for _ in range(_MAX_DECODE_ROUNDS):
         decoded = urllib.parse.unquote(text)
         if decoded == text:
@@ -63,18 +48,9 @@ def _url_decode_fully(text: str) -> str:
     return text
 
 def _strip_sql_comments(text: str, replacement: str) -> str:
-    """Removes inline /* ... */ comments, a classic way to either split a
-    keyword (UNI/**/ON) or fake a separator between keywords
-    (UNION/**/SELECT) to dodge a literal match. Tried with two different
-    replacements since real payloads use both styles."""
     return _COMMENT_RE.sub(replacement, text)
 
 def _normalized_variants(text: str) -> List[str]:
-    """Builds the text forms to check signatures against: the raw text,
-    the fully percent-decoded text, and SQL-comment-stripped versions of
-    both. Not exhaustive against every possible combined obfuscation —
-    this is a starter defense against the two concrete evasions found
-    during testing, not a general-purpose WAF normalizer."""
     decoded = _url_decode_fully(text)
 
     variants = {text, decoded}
@@ -85,9 +61,6 @@ def _normalized_variants(text: str) -> List[str]:
     return list(variants)
 
 def match(text: str) -> Optional[Tuple[str, str]]:
-    """Returns (category, description) of the first matching signature,
-    checked against the raw text and normalized variants (percent-decoded,
-    SQL-comment-stripped) to catch common literal-match evasions."""
     for variant in _normalized_variants(text):
         for category, pattern, description in SIGNATURES:
             if pattern.search(variant):

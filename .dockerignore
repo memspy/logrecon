@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 .git
+.github
+.env
+.pytest_cache/
+tests/
 alerts.db
 model.joblib
 logbert.pt

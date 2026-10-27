@@ -1,17 +1,3 @@
-"""
-Stores analyst feedback (false positives and confirmed threats) as
-vectors and uses cosine similarity to adapt future alerts without
-retraining the underlying model.
-
-Every accepted addition is timestamped, attributed to a reviewer, and
-logged to an append-only audit trail. Additions are rejected outright
-when they look like an attempt (deliberate or accidental) to poison the
-lists: whitelisting something that closely matches an already-confirmed
-threat, submitting an overly generic log line that would suppress a wide
-swath of unrelated traffic, or adding entries faster than a human review
-process plausibly could.
-"""
-
 import json
 import time
 from pathlib import Path
@@ -26,7 +12,7 @@ MAX_ADDITIONS_PER_HOUR = 20
 MIN_MESSAGE_TOKENS = 3
 
 class RuleRejected(Exception):
-    """Raised when an attempted rule addition looks unsafe to apply automatically."""
+    pass
 
 class PersonalRules:
     def __init__(self, rules_path: str = 'personal_rules.json',
@@ -35,15 +21,25 @@ class PersonalRules:
         self.audit_path = Path(audit_path)
         self.false_positives: List[dict] = []
         self.true_positive_threats: List[dict] = []
+        self._mtime: Optional[float] = None
         self._load()
 
     def _load(self) -> None:
         if not self.rules_path.exists():
             return
+        self._mtime = self.rules_path.stat().st_mtime
         with open(self.rules_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         self.false_positives = data.get('false_positives', [])
         self.true_positive_threats = data.get('true_positive_threats', [])
+
+    def reload_if_changed(self) -> bool:
+        if not self.rules_path.exists():
+            return False
+        if self.rules_path.stat().st_mtime == self._mtime:
+            return False
+        self._load()
+        return True
 
     def _save(self) -> None:
         data = {
@@ -52,6 +48,7 @@ class PersonalRules:
         }
         with open(self.rules_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        self._mtime = self.rules_path.stat().st_mtime
 
     def _audit(self, action: str, raw_log: str, reviewer: str, note: Optional[str] = None) -> None:
         record = {
@@ -72,14 +69,14 @@ class PersonalRules:
                 f'{list_name}: {recent} additions in the last hour, at the '
                 f'{MAX_ADDITIONS_PER_HOUR}/hour limit. This usually means either a real '
                 'incident flood (handle it, do not bulk-whitelist around it) or a '
-                'compromised/scripted session — investigate before raising the limit.'
+                'compromised/scripted session - investigate before raising the limit.'
             )
 
     def _check_specificity(self, raw_log: str) -> None:
         token_count = len(raw_log.split())
         if token_count < MIN_MESSAGE_TOKENS:
             raise RuleRejected(
-                f'Log line has only {token_count} token(s) — too generic to safely '
+                f'Log line has only {token_count} token(s) - too generic to safely '
                 'whitelist automatically, since its vector would likely match a wide '
                 'range of unrelated log lines. Add a more specific rule by hand if this '
                 'really is noise.'
@@ -95,7 +92,7 @@ class PersonalRules:
                         note=f'similarity to a confirmed threat: {conflict:.3f}')
             raise RuleRejected(
                 f'This log is {conflict:.2f} similar to an already-confirmed threat. '
-                'Refusing to whitelist it automatically — if this really is a false '
+                'Refusing to whitelist it automatically - if this really is a false '
                 'positive, it needs manual review, not a one-click suppress.'
             )
 

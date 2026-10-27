@@ -17,6 +17,8 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 10s
@@ -38,20 +40,26 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
 
   fluent-bit:
     image: fluent/fluent-bit:3.1
     networks:
       - internal
+    environment:
+      - LOG_FILE=${LOG_FILE:-server.log}
     volumes:
       - ./fluent-bit.docker.conf:/fluent-bit/etc/fluent-bit.conf:ro
       - ./fluent-bit-state:/fluent-bit/state
-      - /var/log:/hostlogs:ro
+      - ${LOG_DIR:-./logs}:/hostlogs:ro
     depends_on:
       ingest:
         condition: service_healthy
     restart: unless-stopped
     mem_limit: 128m
     cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
     profiles:
       - fluentbit

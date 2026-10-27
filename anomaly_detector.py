@@ -1,8 +1,3 @@
-"""
-Learns a baseline of "normal" server behavior from parsed logs and
-flags entries that deviate from it using an Isolation Forest model.
-"""
-
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -21,8 +16,6 @@ def _log_to_text(record: Dict[str, Any]) -> str:
     return ' '.join(p for p in parts if p)
 
 class AnomalyDetector:
-    """Isolation Forest based anomaly scorer for parsed log records."""
-
     def __init__(self, model_path: str = 'model.joblib', contamination: float = 0.02):
         self.model_path = Path(model_path)
         self.vectorizer = HashingVectorizer(
@@ -42,7 +35,6 @@ class AnomalyDetector:
         return self.vectorizer.transform(texts)
 
     def train(self, records: List[Dict[str, Any]]) -> None:
-        """Builds the baseline 'norm' model from a batch of historical logs."""
         if not records:
             raise ValueError('Cannot train on an empty log batch')
 
@@ -52,8 +44,6 @@ class AnomalyDetector:
         self.save()
 
     def predict_vectors(self, vectors):
-        """Scores already-vectorized records. Used when the caller needs the
-        raw vectors themselves for further checks (e.g. personal rules)."""
         if not self._is_trained:
             self.load()
 
@@ -62,7 +52,6 @@ class AnomalyDetector:
         return raw_scores, predictions
 
     def score(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Vectorizes and scores records, annotating each with score, flag and vector."""
         vectors = self.vectorize(records)
         raw_scores, predictions = self.predict_vectors(vectors)
 
