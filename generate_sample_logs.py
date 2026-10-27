@@ -1,16 +1,7 @@
-"""
-Generates synthetic log lines for testing the anomaly detector end to end,
-without needing access to a real server or Fluentbit/Logstash yet.
-
-Usage:
-    python generate_sample_logs.py baseline   # writes ~2000 normal lines
-    python generate_sample_logs.py append     # appends a mix of normal + anomalous lines
-"""
-
+import argparse
 import os
 import random
-import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 LOG_PATH = 'logs/server.log'
 
@@ -28,6 +19,9 @@ ANOMALOUS_TEMPLATES = [
 
 ANOMALOUS_IPS = ['203.0.113.5', '198.51.100.9', '185.220.101.7']
 
+def _now():
+    return datetime.now(timezone.utc)
+
 def _apache_ts(dt):
     return dt.strftime('%d/%b/%Y:%H:%M:%S +0000')
 
@@ -44,31 +38,38 @@ def generate_anomalous_line(dt):
     template = random.choice(ANOMALOUS_TEMPLATES)
     return template.format(ip=random.choice(ANOMALOUS_IPS), ts=_apache_ts(dt), ts_syslog=_syslog_ts(dt))
 
-def write_baseline(count: int = 2000) -> None:
-    now = datetime.utcnow()
-    with open(LOG_PATH, 'w', encoding='utf-8') as f:
+def write_baseline(path: str, count: int) -> None:
+    now = _now()
+    with open(path, 'w', encoding='utf-8') as f:
         for i in range(count):
             dt = now - timedelta(seconds=(count - i))
             f.write(generate_normal_line(dt) + '\n')
-    print(f'Wrote {count} baseline (normal) log lines to {LOG_PATH}')
+    print(f'Wrote {count} baseline (normal) log lines to {path}')
 
-def append_mixed(count: int = 30, anomaly_ratio: float = 0.2) -> None:
-    now = datetime.utcnow()
-    with open(LOG_PATH, 'a', encoding='utf-8') as f:
+def append_mixed(path: str, count: int, anomaly_ratio: float = 0.2) -> None:
+    now = _now()
+    with open(path, 'a', encoding='utf-8') as f:
         for i in range(count):
             dt = now + timedelta(seconds=i)
             line = generate_anomalous_line(dt) if random.random() < anomaly_ratio else generate_normal_line(dt)
             f.write(line + '\n')
-    print(f'Appended {count} log lines (~{int(count * anomaly_ratio)} anomalous) to {LOG_PATH}')
+    print(f'Appended {count} log lines (about {int(count * anomaly_ratio)} anomalous) to {path}')
+
+def main():
+    cli = argparse.ArgumentParser(description='Generate synthetic log lines for demos and tests.')
+    cli.add_argument('mode', nargs='?', default='baseline', choices=['baseline', 'append'])
+    cli.add_argument('--path', default=LOG_PATH)
+    cli.add_argument('--count', type=int, default=None)
+    args = cli.parse_args()
+
+    directory = os.path.dirname(args.path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    if args.mode == 'baseline':
+        write_baseline(args.path, args.count or 2000)
+    else:
+        append_mixed(args.path, args.count or 30)
 
 if __name__ == '__main__':
-    mode = sys.argv[1] if len(sys.argv) > 1 else 'baseline'
-    os.makedirs('logs', exist_ok=True)
-
-    if mode == 'baseline':
-        write_baseline()
-    elif mode == 'append':
-        append_mixed()
-    else:
-        print('Unknown mode. Use "baseline" or "append".')
-        sys.exit(1)
+    main()

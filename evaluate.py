@@ -1,22 +1,13 @@
-"""
-Evaluates the trained IsolationForest model against a labeled synthetic
-log set, to sanity-check the contamination threshold before pointing
-the pipeline at anything real.
-
-Usage:
-    python evaluate.py [count]
-"""
-
+import argparse
 import random
-import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from anomaly_detector import AnomalyDetector
 from generate_sample_logs import generate_anomalous_line, generate_normal_line
 from log_parser import LogParser
 
 def build_labeled_set(count: int, anomaly_ratio: float = 0.15):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     lines = []
     labels = []
 
@@ -30,13 +21,15 @@ def build_labeled_set(count: int, anomaly_ratio: float = 0.15):
     return lines, labels
 
 def main():
-    count = int(sys.argv[1]) if len(sys.argv) > 1 else 500
+    cli = argparse.ArgumentParser(description='Evaluate the trained model against a labeled synthetic log set.')
+    cli.add_argument('count', nargs='?', type=int, default=500)
+    args = cli.parse_args()
 
     parser = LogParser()
     detector = AnomalyDetector()
     detector.load()
 
-    lines, labels = build_labeled_set(count)
+    lines, labels = build_labeled_set(args.count)
     records = [parser.parse_line(line) for line in lines]
     scored = detector.score(records)
 
@@ -56,7 +49,7 @@ def main():
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
 
-    print(f'Test set: {count} lines ({sum(labels)} anomalous, {count - sum(labels)} normal)')
+    print(f'Test set: {args.count} lines ({sum(labels)} anomalous, {args.count - sum(labels)} normal)')
     print(f'TP={tp} FP={fp} TN={tn} FN={fn}')
     print(f'Precision: {precision:.3f}')
     print(f'Recall:    {recall:.3f}')

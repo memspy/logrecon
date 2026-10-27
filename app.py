@@ -1,9 +1,3 @@
-"""
-Streamlit dashboard for reviewing anomalous log entries and teaching
-the model what counts as normal vs. a real threat. Reads alerts pushed
-by ingest_service.py into the shared SQLite store.
-"""
-
 import json
 
 import streamlit as st
@@ -27,8 +21,8 @@ def get_components():
     return PersonalRules(rules_path=RULES_PATH), AlertStore(db_path=DB_PATH), LogParser(), detector
 
 def render_manual_classification(rules, parser, detector, reviewer):
-    with st.expander('📝 Ручная классификация'):
-        raw_text = st.text_area('Строка лога', key='manual_log_input', height=80)
+    with st.expander('Manual classification'):
+        raw_text = st.text_area('Log line', key='manual_log_input', height=80)
 
         if not raw_text.strip():
             return
@@ -39,32 +33,32 @@ def render_manual_classification(rules, parser, detector, reviewer):
         signature = match_signature(record['raw'])
         if signature:
             category, description = signature
-            st.warning(f'Совпадает с сигнатурой: {description} ({category})')
+            st.warning(f'Matches a known signature: {description} ({category})')
 
         status_line = f"service: {record.get('service')} | status: {record.get('status')} | format: {record.get('format')}"
         if detector.is_trained:
             score = float(detector.model.decision_function(vector)[0])
-            verdict = 'аномалия' if detector.model.predict(vector)[0] == -1 else 'в пределах нормы'
+            verdict = 'anomalous' if detector.model.predict(vector)[0] == -1 else 'within normal range'
             status_line += f" | Isolation Forest: {score:.3f} ({verdict})"
         st.caption(status_line)
 
         col1, col2 = st.columns(2)
         with col1:
-            mark_normal = st.button('👍 Отметить как норму', key='manual_normal')
+            mark_normal = st.button('Mark as normal', key='manual_normal')
         with col2:
-            mark_threat = st.button('⚠️ Отметить как угрозу', key='manual_threat')
+            mark_threat = st.button('Mark as threat', key='manual_threat')
 
         if mark_normal:
             try:
                 rules.add_false_positive(vector, record['raw'], reviewer=reviewer)
-                st.success('Добавлено в белый список')
+                st.success('Added to the allow list')
             except RuleRejected as e:
                 st.error(str(e))
 
         if mark_threat:
             try:
                 rules.add_true_positive_threat(vector, record['raw'], reviewer=reviewer)
-                st.success('Добавлено в чёрный список')
+                st.success('Added to the deny list')
             except RuleRejected as e:
                 st.error(str(e))
 
@@ -74,34 +68,34 @@ def render_signature_match(alert, store):
             category, description = json.loads(alert['context_json'])
         else:
             category, description = 'unknown', 'unknown'
-        st.error(f'Известная сигнатура атаки: {description} ({category})')
+        st.error(f'Known attack signature: {description} ({category})')
         st.code(alert['raw'], language=None)
         st.caption(f"service: {alert.get('service')} | status: {alert.get('status')}")
 
-        if st.button('✅ Принято в работу', key=f"sig_ack_{alert['id']}"):
+        if st.button('Acknowledge', key=f"sig_ack_{alert['id']}"):
             store.mark_reviewed(alert['id'])
             st.rerun()
 
 def render_known_threat(alert, store):
     with st.container(border=True):
-        st.error('Совпадение с подтверждённой угрозой')
+        st.error('Matches a previously confirmed threat')
         st.code(alert['raw'], language=None)
         st.caption(f"service: {alert.get('service')} | status: {alert.get('status')}")
 
-        if st.button('✅ Принято в работу', key=f"ack_{alert['id']}"):
+        if st.button('Acknowledge', key=f"ack_{alert['id']}"):
             store.mark_reviewed(alert['id'])
             st.rerun()
 
 def render_sequence_incident(alert, store):
     with st.container(border=True):
-        st.warning(f"Подозрительная последовательность событий (score {alert['anomaly_score']:.2f})")
+        st.warning(f"Suspicious event sequence (score {alert['anomaly_score']:.2f})")
         context = json.loads(alert['context_json']) if alert.get('context_json') else [alert['raw']]
 
         for line in context:
             prefix = '>>> ' if line == alert['raw'] else ''
             st.code(prefix + line, language=None)
 
-        if st.button('✅ Принято в работу', key=f"seq_ack_{alert['id']}"):
+        if st.button('Acknowledge', key=f"seq_ack_{alert['id']}"):
             store.mark_reviewed(alert['id'])
             st.rerun()
 
@@ -120,7 +114,7 @@ def render_model_anomaly(alert, rules, store, reviewer):
         with col_actions:
             vector = json.loads(alert['vector_json'])
 
-            if st.button('👍 Это норма', key=f"ok_{alert['id']}"):
+            if st.button('Normal', key=f"ok_{alert['id']}"):
                 try:
                     rules.add_false_positive(vector, alert['raw'], reviewer=reviewer)
                     store.mark_reviewed(alert['id'])
@@ -128,7 +122,7 @@ def render_model_anomaly(alert, rules, store, reviewer):
                 except RuleRejected as e:
                     st.error(str(e))
 
-            if st.button('⚠️ Реальная угроза', key=f"threat_{alert['id']}"):
+            if st.button('Threat', key=f"threat_{alert['id']}"):
                 try:
                     rules.add_true_positive_threat(vector, alert['raw'], reviewer=reviewer)
                     store.mark_reviewed(alert['id'])
@@ -141,14 +135,14 @@ def main():
     st.title('LogRecon')
 
     with st.sidebar:
-        reviewer = st.text_input('Ваше имя (для аудита)', value=st.session_state.get('reviewer', ''))
+        reviewer = st.text_input('Your name (recorded in the audit log)', value=st.session_state.get('reviewer', ''))
         st.session_state['reviewer'] = reviewer
         if not reviewer:
-            st.caption('Без имени решения будут записаны как "unknown"')
+            st.caption('Without a name, decisions are recorded as "unknown"')
 
     rules, store, parser, detector = get_components()
 
-    if st.button('🔄 Обновить'):
+    if st.button('Refresh'):
         st.rerun()
 
     render_manual_classification(rules, parser, detector, reviewer or 'unknown')
@@ -156,7 +150,7 @@ def main():
     alerts = store.get_pending()
 
     if not alerts:
-        st.info('Нет подозрительных записей на проверке.')
+        st.info('No suspicious entries awaiting review.')
         return
 
     signature_matches = [a for a in alerts if a['match_type'] == 'signature_match']
@@ -165,22 +159,22 @@ def main():
     model_anomalies = [a for a in alerts if a['match_type'] == 'model_anomaly']
 
     if signature_matches:
-        st.subheader(f'🚨 Известные сигнатуры атак ({len(signature_matches)})')
+        st.subheader(f'Known attack signatures ({len(signature_matches)})')
         for alert in signature_matches:
             render_signature_match(alert, store)
 
     if known_threats:
-        st.subheader(f'Подтверждённые угрозы ({len(known_threats)})')
+        st.subheader(f'Confirmed threats ({len(known_threats)})')
         for alert in known_threats:
             render_known_threat(alert, store)
 
     if sequence_incidents:
-        st.subheader(f'Сложные инциденты — аномальные последовательности ({len(sequence_incidents)})')
+        st.subheader(f'Sequence incidents ({len(sequence_incidents)})')
         for alert in sequence_incidents:
             render_sequence_incident(alert, store)
 
     if model_anomalies:
-        st.subheader(f'На классификацию ({len(model_anomalies)})')
+        st.subheader(f'To classify ({len(model_anomalies)})')
         for alert in model_anomalies:
             render_model_anomaly(alert, rules, store, reviewer or 'unknown')
 

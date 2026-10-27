@@ -1,10 +1,3 @@
-"""
-Converts raw, unstructured log lines into normalized JSON records
-suitable for ML-based anomaly detection. Supports nginx/apache combined
-access logs, Apache error logs, syslog-style logs, and OpenStack's
-structured service logs.
-"""
-
 import re
 from typing import Any, Dict, List
 
@@ -47,8 +40,6 @@ STATUS_RE = re.compile(r'status:\s*(\d{3})')
 REQ_ID_RE = re.compile(r'(req-[0-9a-f-]{36})')
 
 class LogParser:
-    """Parses raw log lines into a flat, normalized structure."""
-
     def __init__(self):
         self._patterns = [
             ('nginx_combined', NGINX_COMBINED_RE),

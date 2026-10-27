@@ -1,8 +1,3 @@
-"""
-SQLite-backed storage for suspicious log entries produced by the
-ingestion service and consumed by the Streamlit dashboard.
-"""
-
 import json
 import sqlite3
 from pathlib import Path
@@ -14,10 +9,12 @@ class AlertStore:
         self._init_schema()
 
     def _connect(self):
+        if not self.db_path.exists():
+            self._init_schema()
         return sqlite3.connect(self.db_path)
 
     def _init_schema(self) -> None:
-        with self._connect() as conn:
+        with sqlite3.connect(self.db_path) as conn:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS alerts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
